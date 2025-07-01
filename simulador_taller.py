@@ -4,16 +4,18 @@ from collections import deque, defaultdict
 
 # --- Parámetros del sistema (puedes modificar para análisis de sensibilidad) ---
 LAMBDA_LLEGADAS_BASE = 2/60  # vehículos por minuto (base)
-REV_PREVIA_MEDIA = 15
-REP_LIGERA_MEDIA, REP_LIGERA_STD = 30, 5
-REP_MEDIA_MEDIA, REP_MEDIA_STD = 60, 10
-REP_COMPLEJA_MIN, REP_COMPLEJA_MODE, REP_COMPLEJA_MAX = 120, 280, 480
-CHEQUEO_MEDIA, CHEQUEO_STD = 10, 2
-P_FALLO_CALIDAD_BASE = 0.10 # Probabilidad de fallo de calidad (base)
+P_FALLO_CALIDAD_BASE = 0.10  # Probabilidad de fallo de calidad (base)
+
+# TIEMPOS DE SERVICIO BASE (Medias y STDs)
+REV_PREVIA_MEDIA_BASE = 15
+REP_LIGERA_MEDIA_BASE, REP_LIGERA_STD_BASE = 30, 5
+REP_MEDIA_MEDIA_BASE, REP_MEDIA_STD_BASE = 60, 10
+REP_COMPLEJA_MIN_BASE, REP_COMPLEJA_MODE_BASE, REP_COMPLEJA_MAX_BASE = 120, 280, 480
+CHEQUEO_MEDIA_BASE, CHEQUEO_STD_BASE = 10, 2
 
 # --- Configuración de simulación ---
-TIEMPO_MAX = 2920 * 60  # 2920 horas en minutos (equivalente a 1 año laboral, aprox)
-NUM_REPLICAS = 30       # Número de veces que se ejecutará cada escenario para análisis estadístico
+TIEMPO_MAX = 2920 * 60   # 2920 horas en minutos (equivalente a 1 año laboral, aprox)
+NUM_REPLICAS = 30        # Número de veces que se ejecutará cada escenario para análisis estadístico
 
 # NÚMERO DE SERVIDORES POR FASE (configuración base)
 N_SERVIDORES_REV_BASE = 2
@@ -35,26 +37,28 @@ TIPOS_REP = [TIPO_REP_LIGERA, TIPO_REP_MEDIA, TIPO_REP_COMPLEJA]
 PROB_REP = [0.5, 0.3, 0.2]  # Probabilidad de cada tipo de reparación
 
 # --- Generadores de variables aleatorias ---
+# NOTA: Los generadores ahora toman los parámetros de media/std como argumentos
+# para usar los valores que se pasen a la simulación.
 def tiempo_llegada(lam_llegadas):
     return np.random.exponential(1 / lam_llegadas)
 
-def tiempo_revision():
-    return np.random.exponential(REV_PREVIA_MEDIA)
+def tiempo_revision(rev_media):
+    return np.random.exponential(rev_media)
 
 def tipo_reparacion():
     return np.random.choice(TIPOS_REP, p=PROB_REP)
 
-def tiempo_reparacion(tipo):
+def tiempo_reparacion(tipo, rep_lig_media, rep_lig_std, rep_med_media, rep_med_std, rep_comp_min, rep_comp_mode, rep_comp_max):
     if tipo == TIPO_REP_LIGERA:
-        return np.random.normal(REP_LIGERA_MEDIA, REP_LIGERA_STD)
+        return np.random.normal(rep_lig_media, rep_lig_std)
     elif tipo == TIPO_REP_MEDIA:
-        return np.random.normal(REP_MEDIA_MEDIA, REP_MEDIA_STD)
+        return np.random.normal(rep_med_media, rep_med_std)
     else:
         # Triangular manual
-        return np.random.triangular(REP_COMPLEJA_MIN, REP_COMPLEJA_MODE, REP_COMPLEJA_MAX)
+        return np.random.triangular(rep_comp_min, rep_comp_mode, rep_comp_max)
 
-def tiempo_chequeo():
-    return np.random.normal(CHEQUEO_MEDIA, CHEQUEO_STD)
+def tiempo_chequeo(cheq_media, cheq_std):
+    return np.random.normal(cheq_media, cheq_std)
 
 def pasa_calidad(p_fallo):
     return np.random.rand() > p_fallo
@@ -67,7 +71,7 @@ class Evento:
         self.tipo = tipo
         self.datos = datos
     def __lt__(self, other):
-        return (self.tiempo, self.contador) < (other.tiempo, self.contador)
+        return (self.tiempo, self.contador) < (other.tiempo, other.contador)
 
 # --- Simulación principal ---
 def simular(tiempo_max,
@@ -76,6 +80,11 @@ def simular(tiempo_max,
             n_servidores_rev,
             n_servidores_rep,
             n_servidores_cheq,
+            rev_media,
+            rep_lig_media, rep_lig_std,
+            rep_med_media, rep_med_std,
+            rep_comp_min, rep_comp_mode, rep_comp_max,
+            cheq_media, cheq_std,
             semilla=None):
 
     if semilla is not None:
@@ -84,7 +93,7 @@ def simular(tiempo_max,
     reloj = 0
     fel = []
     contador_eventos = 0
-   
+    
     # Servidores ocupados por fase
     servidores_ocupados_rev = 0
     servidores_ocupados_rep = 0
@@ -130,7 +139,7 @@ def simular(tiempo_max,
                 servidores_ocupados_rev += 1
                 datos = cola_revision.popleft()
                 datos['inicio_revision'] = reloj
-                heapq.heappush(fel, Evento(reloj + tiempo_revision(), contador_eventos, EVENTO_FIN_REV, datos))
+                heapq.heappush(fel, Evento(reloj + tiempo_revision(rev_media), contador_eventos, EVENTO_FIN_REV, datos))
                 contador_eventos += 1
 
         elif evento.tipo == EVENTO_FIN_REV:
@@ -145,7 +154,7 @@ def simular(tiempo_max,
                 servidores_ocupados_rev += 1
                 datos = cola_revision.popleft()
                 datos['inicio_revision'] = reloj
-                heapq.heappush(fel, Evento(reloj + tiempo_revision(), contador_eventos, EVENTO_FIN_REV, datos))
+                heapq.heappush(fel, Evento(reloj + tiempo_revision(rev_media), contador_eventos, EVENTO_FIN_REV, datos))
                 contador_eventos += 1
 
             # Intenta iniciar un servicio en Reparación (el vehículo que acaba de salir de revisión)
@@ -153,7 +162,7 @@ def simular(tiempo_max,
                 servidores_ocupados_rep += 1
                 datos = cola_reparacion.popleft()
                 datos['inicio_reparacion'] = reloj
-                t_rep = max(0, tiempo_reparacion(datos['tipo_rep']))
+                t_rep = max(0, tiempo_reparacion(datos['tipo_rep'], rep_lig_media, rep_lig_std, rep_med_media, rep_med_std, rep_comp_min, rep_comp_mode, rep_comp_max))
                 heapq.heappush(fel, Evento(reloj + t_rep, contador_eventos, EVENTO_FIN_REP, datos))
                 contador_eventos += 1
 
@@ -167,7 +176,7 @@ def simular(tiempo_max,
                 servidores_ocupados_rep += 1
                 datos = cola_reparacion.popleft()
                 datos['inicio_reparacion'] = reloj
-                t_rep = max(0, tiempo_reparacion(datos['tipo_rep']))
+                t_rep = max(0, tiempo_reparacion(datos['tipo_rep'], rep_lig_media, rep_lig_std, rep_med_media, rep_med_std, rep_comp_min, rep_comp_mode, rep_comp_max))
                 heapq.heappush(fel, Evento(reloj + t_rep, contador_eventos, EVENTO_FIN_REP, datos))
                 contador_eventos += 1
 
@@ -176,7 +185,7 @@ def simular(tiempo_max,
                 servidores_ocupados_cheq += 1
                 datos = cola_chequeo.popleft()
                 datos['inicio_chequeo'] = reloj
-                t_cheq = max(0, tiempo_chequeo())
+                t_cheq = max(0, tiempo_chequeo(cheq_media, cheq_std))
                 heapq.heappush(fel, Evento(reloj + t_cheq, contador_eventos, EVENTO_FIN_CHEQUEO, datos))
                 contador_eventos += 1
 
@@ -197,7 +206,7 @@ def simular(tiempo_max,
                 servidores_ocupados_cheq += 1
                 datos = cola_chequeo.popleft()
                 datos['inicio_chequeo'] = reloj
-                t_cheq = max(0, tiempo_chequeo())
+                t_cheq = max(0, tiempo_chequeo(cheq_media, cheq_std))
                 heapq.heappush(fel, Evento(reloj + t_cheq, contador_eventos, EVENTO_FIN_CHEQUEO, datos))
                 contador_eventos += 1
 
@@ -206,7 +215,7 @@ def simular(tiempo_max,
                 servidores_ocupados_rep += 1
                 datos = cola_reparacion.popleft()
                 datos['inicio_reparacion'] = reloj
-                t_rep = max(0, tiempo_reparacion(datos['tipo_rep']))
+                t_rep = max(0, tiempo_reparacion(datos['tipo_rep'], rep_lig_media, rep_lig_std, rep_med_media, rep_med_std, rep_comp_min, rep_comp_mode, rep_comp_max))
                 heapq.heappush(fel, Evento(reloj + t_rep, contador_eventos, EVENTO_FIN_REP, datos))
                 contador_eventos += 1
 
@@ -226,7 +235,7 @@ def simular(tiempo_max,
 
     # --- Recopilación de Resultados de la Réplica ---
     resultados_replica = {}
-   
+    
     resultados_replica['vehiculos_procesados'] = len(estadisticas_vehiculos['tiempos_sistema'])
     
     if resultados_replica['vehiculos_procesados'] > 0:
@@ -248,7 +257,7 @@ def simular(tiempo_max,
 # --- Función para ejecutar múltiples réplicas y calcular estadísticas generales ---
 def ejecutar_escenario(nombre_escenario, params, num_replicas=NUM_REPLICAS):
     print(f"\n--- {nombre_escenario} ({num_replicas} Réplicas) ---")
-   
+    
     # Listas para almacenar los resultados de cada réplica
     vehiculos_procesados_replicas = []
     tiempo_sistema_promedio_replicas = []
@@ -259,7 +268,6 @@ def ejecutar_escenario(nombre_escenario, params, num_replicas=NUM_REPLICAS):
 
     for i in range(num_replicas):
         # Usar una semilla diferente para cada réplica para asegurar independencia
-        # La semilla es 'i' para que la secuencia de réplicas sea reproducible
         resultados_replica = simular(
             tiempo_max=TIEMPO_MAX,
             lam_llegadas=params.get('lam_llegadas', LAMBDA_LLEGADAS_BASE),
@@ -267,6 +275,19 @@ def ejecutar_escenario(nombre_escenario, params, num_replicas=NUM_REPLICAS):
             n_servidores_rev=params.get('n_servidores_rev', N_SERVIDORES_REV_BASE),
             n_servidores_rep=params.get('n_servidores_rep', N_SERVIDORES_REP_BASE),
             n_servidores_cheq=params.get('n_servidores_cheq', N_SERVIDORES_CHEQ_BASE),
+            
+            # Nuevos parámetros de tiempo de servicio
+            rev_media=params.get('rev_media', REV_PREVIA_MEDIA_BASE),
+            rep_lig_media=params.get('rep_lig_media', REP_LIGERA_MEDIA_BASE),
+            rep_lig_std=params.get('rep_lig_std', REP_LIGERA_STD_BASE),
+            rep_med_media=params.get('rep_med_media', REP_MEDIA_MEDIA_BASE),
+            rep_med_std=params.get('rep_med_std', REP_MEDIA_STD_BASE),
+            rep_comp_min=params.get('rep_comp_min', REP_COMPLEJA_MIN_BASE),
+            rep_comp_mode=params.get('rep_comp_mode', REP_COMPLEJA_MODE_BASE),
+            rep_comp_max=params.get('rep_comp_max', REP_COMPLEJA_MAX_BASE),
+            cheq_media=params.get('cheq_media', CHEQUEO_MEDIA_BASE),
+            cheq_std=params.get('cheq_std', CHEQUEO_STD_BASE),
+
             semilla=i # Semilla diferente para cada réplica
         )
         vehiculos_procesados_replicas.append(resultados_replica['vehiculos_procesados'])
@@ -281,8 +302,8 @@ def ejecutar_escenario(nombre_escenario, params, num_replicas=NUM_REPLICAS):
         data = np.array(data)
         media = np.mean(data)
         std = np.std(data, ddof=1) # Desviación estándar muestral
-        if NUM_REPLICAS > 1:
-            error_estandar = std / np.sqrt(NUM_REPLICAS)
+        if num_replicas > 1:
+            error_estandar = std / np.sqrt(num_replicas)
             z = 1.96 # Valor z para 95% de confianza (para N >= 30, se usa normal)
             margen_error = z * error_estandar
             ic_inferior = media - margen_error
@@ -321,45 +342,157 @@ if __name__ == "__main__":
             'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
             'n_servidores_rev': N_SERVIDORES_REV_BASE,
             'n_servidores_rep': N_SERVIDORES_REP_BASE,
-            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            # Tiempos de servicio base
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
         }
     )
 
-    # --- Análisis de Sensibilidad (Ejemplos) ---
+    # --- Análisis de Sensibilidad (Ejemplos con nuevos parámetros de tiempo) ---
 
-    # Escenario 2: Mayor Tasa de Llegadas (lambda = 3/60)
+    # Escenario 2: Mejora de eficiencia en Revisión (tiempo promedio más bajo)
     ejecutar_escenario(
-        "Simulación con mayor tasa de llegadas (λ=3/60)",
-        params={
-            'lam_llegadas': 3/60, # Alteramos solo este parámetro
-            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
-            'n_servidores_rev': N_SERVIDORES_REV_BASE,
-            'n_servidores_rep': N_SERVIDORES_REP_BASE,
-            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE
-        }
-    )
-
-    # Escenario 3: Menor Probabilidad de Fallo en Chequeo (p = 0.05)
-    ejecutar_escenario(
-        "Simulación con menor probabilidad de fallo en chequeo (p=0.05)",
-        params={
-            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
-            'p_fallo_calidad': 0.05, # Alteramos solo este parámetro
-            'n_servidores_rev': N_SERVIDORES_REV_BASE,
-            'n_servidores_rep': N_SERVIDORES_REP_BASE,
-            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE
-        }
-    )
-
-    # --- Ejemplo de Sistema Modificado (para tus conclusiones) ---
-    # Podrías, por ejemplo, mover un mecánico de Reparación a Chequeo
-    ejecutar_escenario(
-        "Sistema Modificado: 1 mecánico menos en Reparación, 1 más en Chequeo",
+        "Simulación: Revisión más Rápida (Media=10min)",
         params={
             'lam_llegadas': LAMBDA_LLEGADAS_BASE,
             'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
             'n_servidores_rev': N_SERVIDORES_REV_BASE,
-            'n_servidores_rep': N_SERVIDORES_REP_BASE - 1, # Un mecánico menos
-            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE + 1 # Un mecánico más
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': 10, # ¡Aquí cambiamos la media de Revisión!
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
         }
     )
+
+    # Escenario 3: Mejora de eficiencia en Reparación Ligera (tiempo promedio más bajo)
+    ejecutar_escenario(
+        "Simulación: Reparación Ligera más Rápida",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': 20, # ¡Aquí cambiamos la media de Reparación Ligera!
+            'rep_lig_std': REP_LIGERA_STD_BASE, # Mantener STD base
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )
+
+    ejecutar_escenario(
+        "Simulación: Reparación Media más Rápida",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE,
+            'rep_lig_std': REP_LIGERA_STD_BASE, # Mantener STD base
+            'rep_med_media': 30, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )
+
+    ejecutar_escenario(
+        "Simulación: Reparación compleja más Rápida",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, # ¡Aquí cambiamos la media de Reparación Ligera!
+            'rep_lig_std': REP_LIGERA_STD_BASE, # Mantener STD base
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': 100, 'rep_comp_mode': 200, 'rep_comp_max': 300,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )
+
+    # Escenario 4: Mejora de eficiencia en Chequeo (tiempo promedio más bajo)
+    ejecutar_escenario(
+        "Simulación: Chequeo más Rápido (Media=5min)",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': 5, # ¡Aquí cambiamos la media de Chequeo!
+            'cheq_std': CHEQUEO_STD_BASE, # Mantener STD base
+        }
+    )
+
+    ejecutar_escenario(
+        "Aumentar la tasa de llegadas 3/60",
+        params={
+            'lam_llegadas': 3/60,  # Aumentar la tasa de llegadas
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 
+            'cheq_std': CHEQUEO_STD_BASE, 
+        }
+    )
+
+    ejecutar_escenario(
+        "Disminuir la probabilidad de fallo en la fase de chequeo",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,  # Aumentar la tasa de llegadas
+            'p_fallo_calidad': 0.05,  # Disminuir la probabilidad de fallo de calidad
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 
+            'cheq_std': CHEQUEO_STD_BASE, 
+        }
+    )
+
+    ejecutar_escenario(
+        "Mover un mecanico mas a la fase de reparacion y quitar uno en la fase de revision",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,  # Aumentar la tasa de llegadas
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE, 
+            'n_servidores_rev': N_SERVIDORES_REV_BASE - 1, # Quitar un servidor de revisión
+            'n_servidores_rep': N_SERVIDORES_REP_BASE + 1, # Añadir un servidor de reparación 
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 
+            'cheq_std': CHEQUEO_STD_BASE, 
+        }
+    )
+
+
+    
+    # Puedes seguir añadiendo más escenarios aquí, combinando cambios
+    # o variando otros parámetros como n_servidores, lam_llegadas, p_fallo_calidad, etc.

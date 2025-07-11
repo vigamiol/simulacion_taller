@@ -22,6 +22,9 @@ N_SERVIDORES_REV_BASE = 2
 N_SERVIDORES_REP_BASE = 5
 N_SERVIDORES_CHEQ_BASE = 1
 
+# CAPACIDAD DEL ESTACIONAMIENTO
+CAPACIDAD_ESTACIONAMIENTO_BASE = 15  # Número máximo de vehículos en el estacionamiento
+
 # --- Definición de eventos ---
 EVENTO_LLEGADA = 'llegada'
 EVENTO_FIN_REV = 'fin_revision'
@@ -85,6 +88,7 @@ def simular(tiempo_max,
             rep_med_media, rep_med_std,
             rep_comp_min, rep_comp_mode, rep_comp_max,
             cheq_media, cheq_std,
+            capacidad_estacionamiento=CAPACIDAD_ESTACIONAMIENTO_BASE,
             semilla=None):
 
     if semilla is not None:
@@ -99,12 +103,15 @@ def simular(tiempo_max,
     servidores_ocupados_rep = 0
     servidores_ocupados_cheq = 0
 
+    # Estacionamiento y colas del sistema
+    estacionamiento = deque()  # Cola del estacionamiento con capacidad limitada
     cola_revision = deque()
     cola_reparacion = deque()
     cola_chequeo = deque()
 
     estadisticas_vehiculos = defaultdict(list) # Para métricas por vehículo
     vehiculos_en_sistema = 0
+    vehiculos_rechazados = 0  # Contador de vehículos que no pudieron entrar por falta de espacio
 
     # Métricas para utilización de servidores por fase
     tiempo_servidores_ocupados_rev = 0
@@ -130,17 +137,28 @@ def simular(tiempo_max,
         reloj = evento.tiempo
 
         if evento.tipo == EVENTO_LLEGADA:
-            vehiculos_en_sistema += 1
-            cola_revision.append({'llegada': reloj})
+            # Verificar si hay espacio en el estacionamiento
+            total_vehiculos_en_sistema = len(estacionamiento) + len(cola_revision) + len(cola_reparacion) + len(cola_chequeo) + servidores_ocupados_rev + servidores_ocupados_rep + servidores_ocupados_cheq
+            
+            if total_vehiculos_en_sistema < capacidad_estacionamiento:
+                # Hay espacio: el vehículo entra al estacionamiento
+                vehiculos_en_sistema += 1
+                estacionamiento.append({'llegada': reloj, 'entrada_estacionamiento': reloj})
+                
+                # Intentar mover vehículo del estacionamiento a revisión si hay servidor disponible
+                if servidores_ocupados_rev < n_servidores_rev and estacionamiento:
+                    servidores_ocupados_rev += 1
+                    datos = estacionamiento.popleft()
+                    datos['inicio_revision'] = reloj
+                    heapq.heappush(fel, Evento(reloj + tiempo_revision(rev_media), contador_eventos, EVENTO_FIN_REV, datos))
+                    contador_eventos += 1
+            else:
+                # No hay espacio: vehículo se va (se rechaza)
+                vehiculos_rechazados += 1
+            
+            # Programar siguiente llegada
             heapq.heappush(fel, Evento(reloj + tiempo_llegada(lam_llegadas), contador_eventos, EVENTO_LLEGADA, {}))
             contador_eventos += 1
-            # Intenta iniciar servicio en revisión
-            if servidores_ocupados_rev < n_servidores_rev and cola_revision:
-                servidores_ocupados_rev += 1
-                datos = cola_revision.popleft()
-                datos['inicio_revision'] = reloj
-                heapq.heappush(fel, Evento(reloj + tiempo_revision(rev_media), contador_eventos, EVENTO_FIN_REV, datos))
-                contador_eventos += 1
 
         elif evento.tipo == EVENTO_FIN_REV:
             tipo_rep = tipo_reparacion()
@@ -153,6 +171,13 @@ def simular(tiempo_max,
             if servidores_ocupados_rev < n_servidores_rev and cola_revision:
                 servidores_ocupados_rev += 1
                 datos = cola_revision.popleft()
+                datos['inicio_revision'] = reloj
+                heapq.heappush(fel, Evento(reloj + tiempo_revision(rev_media), contador_eventos, EVENTO_FIN_REV, datos))
+                contador_eventos += 1
+            # Si no hay cola en revisión, intentar mover del estacionamiento
+            elif servidores_ocupados_rev < n_servidores_rev and estacionamiento:
+                servidores_ocupados_rev += 1
+                datos = estacionamiento.popleft()
                 datos['inicio_revision'] = reloj
                 heapq.heappush(fel, Evento(reloj + tiempo_revision(rev_media), contador_eventos, EVENTO_FIN_REV, datos))
                 contador_eventos += 1
@@ -237,6 +262,8 @@ def simular(tiempo_max,
     resultados_replica = {}
     
     resultados_replica['vehiculos_procesados'] = len(estadisticas_vehiculos['tiempos_sistema'])
+    resultados_replica['vehiculos_rechazados'] = vehiculos_rechazados
+    resultados_replica['tasa_rechazo'] = (vehiculos_rechazados / (vehiculos_rechazados + len(estadisticas_vehiculos['tiempos_sistema']))) * 100 if (vehiculos_rechazados + len(estadisticas_vehiculos['tiempos_sistema'])) > 0 else 0
     
     if resultados_replica['vehiculos_procesados'] > 0:
         tiempos = np.array(estadisticas_vehiculos['tiempos_sistema'])
@@ -260,6 +287,8 @@ def ejecutar_escenario(nombre_escenario, params, num_replicas=NUM_REPLICAS):
     
     # Listas para almacenar los resultados de cada réplica
     vehiculos_procesados_replicas = []
+    vehiculos_rechazados_replicas = []
+    tasa_rechazo_replicas = []
     tiempo_sistema_promedio_replicas = []
     retrabajos_promedio_replicas = []
     utilizacion_rev_replicas = []
@@ -287,10 +316,15 @@ def ejecutar_escenario(nombre_escenario, params, num_replicas=NUM_REPLICAS):
             rep_comp_max=params.get('rep_comp_max', REP_COMPLEJA_MAX_BASE),
             cheq_media=params.get('cheq_media', CHEQUEO_MEDIA_BASE),
             cheq_std=params.get('cheq_std', CHEQUEO_STD_BASE),
+            
+            # Parámetro de capacidad del estacionamiento
+            capacidad_estacionamiento=params.get('capacidad_estacionamiento', CAPACIDAD_ESTACIONAMIENTO_BASE),
 
             semilla=i # Semilla diferente para cada réplica
         )
         vehiculos_procesados_replicas.append(resultados_replica['vehiculos_procesados'])
+        vehiculos_rechazados_replicas.append(resultados_replica['vehiculos_rechazados'])
+        tasa_rechazo_replicas.append(resultados_replica['tasa_rechazo'])
         tiempo_sistema_promedio_replicas.append(resultados_replica['tiempo_sistema_promedio'])
         retrabajos_promedio_replicas.append(resultados_replica['retrabajos_promedio'])
         utilizacion_rev_replicas.append(resultados_replica['utilizacion_rev'])
@@ -315,6 +349,12 @@ def ejecutar_escenario(nombre_escenario, params, num_replicas=NUM_REPLICAS):
     print("\n--- Resumen General ---")
     media_vehiculos, ic_vehiculos_inf, ic_vehiculos_sup = calcular_estadisticas(vehiculos_procesados_replicas)
     print(f"Vehículos procesados (Promedio): {media_vehiculos:.0f} (IC 95%: [{ic_vehiculos_inf:.0f}, {ic_vehiculos_sup:.0f}])")
+
+    media_rechazados, ic_rechazados_inf, ic_rechazados_sup = calcular_estadisticas(vehiculos_rechazados_replicas)
+    print(f"Vehículos rechazados (Promedio): {media_rechazados:.0f} (IC 95%: [{ic_rechazados_inf:.0f}, {ic_rechazados_sup:.0f}])")
+
+    media_tasa_rechazo, ic_tasa_rechazo_inf, ic_tasa_rechazo_sup = calcular_estadisticas(tasa_rechazo_replicas)
+    print(f"Tasa de rechazo (Promedio): {media_tasa_rechazo:.2f}% (IC 95%: [{ic_tasa_rechazo_inf:.2f}, {ic_tasa_rechazo_sup:.2f}]%)")
 
     media_tiempo_sistema, ic_tiempo_sistema_inf, ic_tiempo_sistema_sup = calcular_estadisticas(tiempo_sistema_promedio_replicas)
     print(f"Tiempo promedio en sistema (Promedio): {media_tiempo_sistema:.2f} min (IC 95%: [{ic_tiempo_sistema_inf:.2f}, {ic_tiempo_sistema_sup:.2f}] min)")
@@ -492,7 +532,72 @@ if __name__ == "__main__":
         }
     )
 
-
+    # --- Análisis de Sensibilidad: Capacidad del Estacionamiento ---
     
-    # Puedes seguir añadiendo más escenarios aquí, combinando cambios
-    # o variando otros parámetros como n_servidores, lam_llegadas, p_fallo_calidad, etc.
+    ejecutar_escenario(
+        "Estacionamiento Pequeño (10 vehículos)",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'capacidad_estacionamiento': 10,  # Reducir capacidad del estacionamiento
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )
+
+    ejecutar_escenario(
+        "Estacionamiento Ampliado (30 vehículos)",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'capacidad_estacionamiento': 30,  # Duplicar capacidad del estacionamiento
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )
+
+    ejecutar_escenario(
+        "Estacionamiento Grande (50 vehículos)",
+        params={
+            'lam_llegadas': LAMBDA_LLEGADAS_BASE,
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'capacidad_estacionamiento': 50,  # Triplicar capacidad del estacionamiento
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )
+
+    ejecutar_escenario(
+        "Estacionamiento con Alta Demanda (30 vehículos + 3 llegadas/hora)",
+        params={
+            'lam_llegadas': 3/60,  # Aumentar tasa de llegadas
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'capacidad_estacionamiento': 30,  # Estacionamiento ampliado
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )

@@ -601,3 +601,20 @@ if __name__ == "__main__":
             'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
         }
     )
+
+    ejecutar_escenario(
+        "Estacionamiento Grande con Alta Demanda (50 vehículos + 3 llegadas/hora)",
+        params={
+            'lam_llegadas': 3/60,  # Aumentar tasa de llegadas
+            'p_fallo_calidad': P_FALLO_CALIDAD_BASE,
+            'n_servidores_rev': N_SERVIDORES_REV_BASE,
+            'n_servidores_rep': N_SERVIDORES_REP_BASE,
+            'n_servidores_cheq': N_SERVIDORES_CHEQ_BASE,
+            'capacidad_estacionamiento': 50,  # Estacionamiento grande
+            'rev_media': REV_PREVIA_MEDIA_BASE,
+            'rep_lig_media': REP_LIGERA_MEDIA_BASE, 'rep_lig_std': REP_LIGERA_STD_BASE,
+            'rep_med_media': REP_MEDIA_MEDIA_BASE, 'rep_med_std': REP_MEDIA_STD_BASE,
+            'rep_comp_min': REP_COMPLEJA_MIN_BASE, 'rep_comp_mode': REP_COMPLEJA_MODE_BASE, 'rep_comp_max': REP_COMPLEJA_MAX_BASE,
+            'cheq_media': CHEQUEO_MEDIA_BASE, 'cheq_std': CHEQUEO_STD_BASE,
+        }
+    )
